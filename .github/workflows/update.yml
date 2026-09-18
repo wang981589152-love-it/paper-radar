@@ -1,0 +1,57 @@
+name: daily-update
+
+on:
+  schedule:
+    - cron: '50 22 * * *'   # UTC 22:50 = 北京时间次日 6:50
+  workflow_dispatch:          # 支持手动触发
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      # runner 上必须排除抓取缓存（明文原始数据），否则会被一起推上仓库
+      # data/meta.js 与 data/full_*.js 是格式化后的站点数据，需要入库
+      - name: 写入 .gitignore
+        run: |
+          cat > .gitignore << 'EOF'
+          __pycache__/
+          *.pyc
+          data/raw_cache.json
+          .DS_Store
+          EOF
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 抓取论文数据（全量，滚动三年窗口）
+        run: python scripts/paper_radar.py full --since "$(date -d '3 years ago' +%F)"
+
+      - name: 抓取图形摘要
+        run: python scripts/paper_radar.py figs --workers 4
+
+      # 明文站点：模板放根目录作首页，数据 js 就位于 data/ 文件夹
+      # GitHub Pages 对文本 js 自动 gzip/br 压缩，20MB 数据实际只传约 5MB
+      - name: 组装明文站点
+        run: |
+          cp src/index.html index.html
+          rm -f *.bin "index-根目录模式.html"
+          ls -la index.html data/
+
+      # 数据文件每日全量变化，常规提交会让仓库历史每天涨几十 MB；
+      # 这里压成单提交强制推送，仓库体积始终保持稳定
+      - name: 单提交强制推送
+        run: |
+          git config user.name "radar-bot"
+          git config user.email "bot@users.noreply.github.com"
+          git checkout --orphan release
+          git add -A
+          git commit -m "daily update $(date +%F)"
+          git branch -M release main
+          git push -f origin main
